@@ -335,8 +335,13 @@ def _find_script(name, filenames, extra_dirs=None):
 
 def find_blackbird():
     """Find blackbird.py — checks common locations and PATH."""
+    _recon_dir = str(Path.home() / "recon")
     found = _find_script("blackbird", ["blackbird.py"],
-                         extra_dirs=[os.environ.get("BLACKBIRD_PATH","")])
+                         extra_dirs=[
+                             os.environ.get("BLACKBIRD_PATH",""),
+                             _recon_dir,
+                             str(Path(_recon_dir) / "blackbird"),
+                         ])
     if found: return found
     if find_tool("blackbird"): return "blackbird"
     return None
@@ -421,10 +426,13 @@ def run_blackbird(username, search_type="username", callback=None):
 
 def find_spiderfoot():
     """Find sf.py — SpiderFoot's main entry point."""
+    _recon_dir = str(Path.home() / "recon")
     found = _find_script("spiderfoot", ["sf.py"],
                          extra_dirs=[
                              os.environ.get("SPIDERFOOT_PATH",""),
                              "spiderfoot-4.0",
+                             _recon_dir,
+                             str(Path(_recon_dir) / "spiderfoot"),
                          ])
     if found: return found
     # Check if spiderfoot is a pip-installed CLI
