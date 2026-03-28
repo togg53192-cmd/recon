@@ -64,17 +64,29 @@ async def main():
 
     username = args.username.strip()
     input_type = detect_input_type(username)
+
+    from recon_engine import get_tool_debug_info, SCRIPT_DIR
+    debug = get_tool_debug_info()
+
     print(f"\n{'='*70}")
     print(f"  RECON - Multi-Source OSINT Aggregator")
     print(f"  Target:      {username}")
     print(f"  Type:        {input_type}")
     print(f"  Time:        {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Script dir:  {SCRIPT_DIR}")
     print(f"  Built-in:    {len(PLATFORMS)} platforms")
-    print(f"  Blackbird:   {'YES' if find_blackbird() else 'no  (git clone https://github.com/p1ngul1n0/blackbird.git)'}")
-    print(f"  SpiderFoot:  {'YES' if find_spiderfoot() else 'no  (git clone https://github.com/smicallef/spiderfoot.git)'}")
-    print(f"  Maigret:     {'YES' if find_tool('maigret') else 'no  (pip install maigret)'}")
-    print(f"  Sherlock:    {'YES' if find_tool('sherlock') else 'no  (pip install sherlock-project)'}")
-    print(f"  Holehe:      {'YES' if find_tool('holehe') else 'no  (pip install holehe)'}")
+    bb = find_blackbird()
+    sf = find_spiderfoot()
+    print(f"  Blackbird:   {bb or 'NOT FOUND'}")
+    print(f"  SpiderFoot:  {sf or 'NOT FOUND'}")
+    print(f"  Maigret:     {'YES' if find_tool('maigret') else 'NOT FOUND'}")
+    print(f"  Sherlock:    {'YES' if find_tool('sherlock') else 'NOT FOUND'}")
+    print(f"  Holehe:      {'YES' if find_tool('holehe') else 'NOT FOUND'}")
+    if not bb or not sf:
+        print(f"")
+        print(f"  TIP: Clone tools into {SCRIPT_DIR}")
+        if not bb: print(f"    git clone https://github.com/p1ngul1n0/blackbird.git")
+        if not sf: print(f"    git clone https://github.com/smicallef/spiderfoot.git")
     print(f"{'='*70}")
 
     report = await full_scan(username, skip_wmn=args.skip_wmn,
