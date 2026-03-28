@@ -304,41 +304,96 @@ async def run_wmn_checks(username, callback=None):
 # PHASE 3: EXTERNAL TOOLS
 # =================================================================
 # Each tool: find it, run it as subprocess, parse output.
-# Supports: Blackbird, SpiderFoot, Maigret, Sherlock
+# Supports: Blackbird, SpiderFoot, Maigret, Sherlock, Holehe
 # =================================================================
+
+# Directory where THIS script lives — tools are searched relative to it
+SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 
 def find_tool(name):
     return shutil.which(name) is not None
 
 
-def _find_script(name, filenames, extra_dirs=None):
-    """Search common locations for a Python script."""
-    dirs = [
-        Path("."),
-        Path(".."),
-        Path.home(),
-        Path.cwd(),
+def _search_for_file(filename, subdirs):
+    """Search for a file across many directories. Returns absolute path or None.
+    
+    Args:
+        filename: e.g. "sf.py" or "blackbird.py"
+        subdirs: list of subfolder names to check, e.g. ["spiderfoot", "spiderfoot-4.0"]
+    """
+    # Base directories to search from
+    bases = [
+        SCRIPT_DIR,                           # next to recon_engine.py
+        Path.cwd(),                           # current working directory
+        SCRIPT_DIR.parent,                    # one level up from script
+        Path.cwd().parent,                    # one level up from cwd
+        Path.home(),                          # home directory
+        Path.home() / "Desktop",
+        Path.home() / "Downloads",
+        Path.home() / "Documents",
     ]
-    if extra_dirs:
-        dirs.extend(Path(d) for d in extra_dirs)
 
-    for d in dirs:
-        for fn in filenames:
-            for sub in [name, ""]:
-                p = d / sub / fn if sub else d / fn
+    # Also check env vars
+    for env_key in ["SPIDERFOOT_PATH", "BLACKBIRD_PATH"]:
+        val = os.environ.get(env_key, "")
+        if val:
+            bases.append(Path(val))
+
+    checked = []
+    for base in bases:
+        try:
+            if not base.exists():
+                continue
+            # Check: base/subdir/filename  (e.g. ./spiderfoot/sf.py)
+            for sub in subdirs:
+                p = base / sub / filename
+                checked.append(str(p))
                 if p.exists():
                     return str(p.resolve())
+            # Check: base/filename  (e.g. ./sf.py)
+            p = base / filename
+            checked.append(str(p))
+            if p.exists():
+                return str(p.resolve())
+        except (PermissionError, OSError):
+            continue
+
     return None
+
+
+def get_tool_debug_info():
+    """Return debug info showing where tools were searched and what was found."""
+    info = {
+        "script_dir": str(SCRIPT_DIR),
+        "cwd": str(Path.cwd()),
+        "blackbird": find_blackbird(),
+        "blackbird_searched": [],
+        "spiderfoot": find_spiderfoot(),
+        "spiderfoot_searched": [],
+        "maigret": find_tool("maigret"),
+        "sherlock": find_tool("sherlock"),
+        "holehe": find_tool("holehe"),
+    }
+    # Show what paths were checked
+    for base in [SCRIPT_DIR, Path.cwd(), SCRIPT_DIR.parent]:
+        for sub in ["blackbird"]:
+            p = base / sub / "blackbird.py"
+            info["blackbird_searched"].append(f"{p} -> {'EXISTS' if p.exists() else 'not found'}")
+        for sub in ["spiderfoot", "spiderfoot-4.0"]:
+            p = base / sub / "sf.py"
+            info["spiderfoot_searched"].append(f"{p} -> {'EXISTS' if p.exists() else 'not found'}")
+    return info
 
 
 # ── Blackbird ────────────────────────────────────────────────────
 
 def find_blackbird():
-    """Find blackbird.py — checks common locations and PATH."""
-    found = _find_script("blackbird", ["blackbird.py"],
-                         extra_dirs=[os.environ.get("BLACKBIRD_PATH","")])
-    if found: return found
-    if find_tool("blackbird"): return "blackbird"
+    """Find blackbird.py — checks many locations."""
+    found = _search_for_file("blackbird.py", ["blackbird"])
+    if found:
+        return found
+    if find_tool("blackbird"):
+        return "blackbird"
     return None
 
 def run_blackbird(username, search_type="username", callback=None):
@@ -421,15 +476,14 @@ def run_blackbird(username, search_type="username", callback=None):
 
 def find_spiderfoot():
     """Find sf.py — SpiderFoot's main entry point.
-    Must return the FULL PATH because SpiderFoot must be run from its own dir."""
-    found = _find_script("spiderfoot", ["sf.py"],
-                         extra_dirs=[
-                             os.environ.get("SPIDERFOOT_PATH",""),
-                             "spiderfoot-4.0",
-                         ])
-    if found: return found
-    if find_tool("spiderfoot"): return "spiderfoot"
-    if find_tool("sf"): return "sf"
+    Checks: ./spiderfoot/sf.py, ./spiderfoot-4.0/sf.py, etc."""
+    found = _search_for_file("sf.py", ["spiderfoot", "spiderfoot-4.0", "spiderfoot-master"])
+    if found:
+        return found
+    if find_tool("spiderfoot"):
+        return "spiderfoot"
+    if find_tool("sf"):
+        return "sf"
     return None
 
 def run_spiderfoot(username, search_type="username", callback=None):
