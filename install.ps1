@@ -11,7 +11,7 @@ function Write-Header {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host "    RECON - Multi-Source OSINT Aggregator" -ForegroundColor Cyan
-    Write-Host "    Installer v2.0" -ForegroundColor Cyan
+    Write-Host "    Installer v2.1" -ForegroundColor Cyan
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -47,6 +47,16 @@ function Check-Python {
         exit 1
     }
     return $py
+}
+
+# ── Get Python version tuple ──────────────────────────────────────────────────
+
+function Get-PythonVersion($py) {
+    $ver = & $py --version 2>&1
+    if ($ver -match "Python (\d+)\.(\d+)") {
+        return @([int]$Matches[1], [int]$Matches[2])
+    }
+    return @(3, 10)
 }
 
 # ── Check Git ─────────────────────────────────────────────────────────────────
@@ -131,33 +141,59 @@ function Install-SpiderFoot($py, $hasGit) {
     if (-not $hasGit) { return }
     Write-Host ""
     $ans = Read-Host "  Install SpiderFoot (200+ OSINT modules)? [Y/n]"
-    if ($ans -eq "" -or $ans -match "^[Yy]") {
-        $dir = "$INSTALL_DIR\spiderfoot"
-        if (Test-Path $dir) {
-            Write-Info "Updating existing SpiderFoot..."
-            Push-Location $dir; & git pull --quiet; Pop-Location
-        } else {
-            Write-Step "Cloning SpiderFoot..."
-            & git clone --quiet https://github.com/smicallef/spiderfoot.git $dir
-        }
-        & $py -m pip install --quiet -r "$dir\requirements.txt"
-        Write-OK "SpiderFoot ready."
-    } else {
+    if (-not ($ans -eq "" -or $ans -match "^[Yy]")) {
         Write-Info "Skipped."
+        return
     }
+
+    # lxml on Windows requires pre-built wheels - try newest first, fall back
+    Write-Step "Installing lxml (pre-built wheel for Windows)..."
+    $lxmlOk = $false
+    foreach ($ver in @("lxml==5.3.0", "lxml==5.2.2", "lxml==4.9.4", "lxml")) {
+        Write-Info "Trying $ver..."
+        $result = & $py -m pip install --quiet --only-binary=:all: $ver 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-OK "lxml installed ($ver)."
+            $lxmlOk = $true
+            break
+        }
+    }
+
+    if (-not $lxmlOk) {
+        Write-Fail "Could not install lxml - SpiderFoot skipped."
+        Write-Info "You can try manually: pip install lxml --only-binary=:all:"
+        return
+    }
+
+    $dir = "$INSTALL_DIR\spiderfoot"
+    if (Test-Path $dir) {
+        Write-Info "Updating existing SpiderFoot..."
+        Push-Location $dir; & git pull --quiet; Pop-Location
+    } else {
+        Write-Step "Cloning SpiderFoot..."
+        & git clone --quiet https://github.com/smicallef/spiderfoot.git $dir
+    }
+
+    # Install SpiderFoot deps but skip lxml since we already have it
+    Write-Step "Installing SpiderFoot dependencies..."
+    $reqFile = "$dir\requirements.txt"
+    $filteredReq = "$INSTALL_DIR\spiderfoot_requirements_filtered.txt"
+
+    # Filter out lxml from requirements so pip doesn't try to recompile it
+    Get-Content $reqFile | Where-Object { $_ -notmatch "^lxml" } | Set-Content $filteredReq
+
+    & $py -m pip install --quiet -r $filteredReq
+    Remove-Item $filteredReq -ErrorAction SilentlyContinue
+
+    Write-OK "SpiderFoot ready."
 }
 
 # ── Create launchers ──────────────────────────────────────────────────────────
 
 function Create-Launchers($py) {
     Write-Step "Creating launcher commands..."
-
-    # recon.bat
     Set-Content "$INSTALL_DIR\recon.bat" "@echo off`r`n$py `"$INSTALL_DIR\recon.py`" %*" -Encoding ASCII
-
-    # recon-web.bat
     Set-Content "$INSTALL_DIR\recon-web.bat" "@echo off`r`necho Starting RECON at http://localhost:8420`r`nstart http://localhost:8420`r`n$py `"$INSTALL_DIR\server.py`"" -Encoding ASCII
-
     Write-OK "Created: 'recon' and 'recon-web' commands."
 }
 
