@@ -8,7 +8,7 @@ Open PowerShell and run:
 
 ```bash
 powershellSet-ExecutionPolicy RemoteSigned -Scope CurrentUser
-irm https://raw.githubusercontent.com/togg53192-cmd/recon/main/install.ps1 |
+irm https://raw.githubusercontent.com/togg53192-cmd/recon/main/install.ps1 | iex
 ```
 # Usage
 
