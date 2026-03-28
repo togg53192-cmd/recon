@@ -1,7 +1,6 @@
 # RECON - Multi-Source OSINT Aggregator
 
-A real OSINT tool that makes actual HTTP requests, integrates with Blackbird/Maigret/Sherlock,
-downloads the WhatsMyName database (500+ sites), and serves results in a web UI.
+Aggregates results from 6 sources into one tool with a browser UI.
 
 # Installation (Windows)
 
@@ -25,106 +24,81 @@ Opens a browser at http://localhost:8420. Keep the terminal window open while us
 ```bash
 recon johndoe
 ```
- Full scan
+ Full scan
 
 ```bash
-recon johndoe --skip-wmn      
+recon johndoe --skip-wmn      
 ```
 Skip WhatsMyName (faster)
 
 ```bash
-recon johndoe --skip-external  
+recon johndoe --skip-external  
 ```
 Skip Blackbird/Maigret/Sherlock
 
 ## Uninstall
 
 Delete the folder C:\Users\<you>\recon and remove it from your PATH in System Settings.
-
-## Quick Setup
+## Quick Start
 
 ```bash
-# 1. Install Python dependency
+pip install aiohttp
+python server.py
+# Open http://localhost:8420
+```
+
+## Full Setup (maximum coverage)
+
+```bash
+# 1. Core dependency
 pip install aiohttp
 
-# 2. (Optional) Install external OSINT tools for deeper coverage
-pip install maigret sherlock-project
+# 2. Auto-install all external tools at once
+python recon.py --install-tools
 
-# 3. (Optional) Install Blackbird
+# OR install each manually:
+
+# Blackbird (600+ sites)
 git clone https://github.com/p1ngul1n0/blackbird.git
-cd blackbird
-pip install -r requirements.txt
-cd ..
+cd blackbird && pip install -r requirements.txt && cd ..
 
-# 4. Run the Web UI
-python server.py
-# Open http://localhost:8420 in your browser
+# SpiderFoot (200+ OSINT modules)
+git clone https://github.com/smicallef/spiderfoot.git
+cd spiderfoot && pip install -r requirements.txt && cd ..
 
-# OR run from command line
-python recon.py <username>
+# Maigret (2000+ sites)
+pip install maigret
+
+# Sherlock (400+ sites)
+pip install sherlock-project
+
+# 3. Launch
+python server.py           # Web UI at http://localhost:8420
+python recon.py <username>  # CLI mode
 ```
 
-## One-liner setup
+## How Each Tool Is Integrated
+
+| Tool | How it runs | What it parses |
+|------|-------------|----------------|
+| Built-in | Direct HTTP to 50+ APIs | JSON data (GitHub, Reddit, Bluesky, Chess.com, etc.) |
+| WhatsMyName | Downloads DB, checks 500+ sites | Status codes + string matching |
+| Blackbird | `python blackbird.py --username X --csv` | stdout + CSV/JSON files |
+| SpiderFoot | `python sf.py -s "X" -o json -u passive` | JSON events (SOCIAL_MEDIA, ACCOUNT, etc.) |
+| Maigret | `maigret X --json simple -o out.json` | JSON claimed profiles |
+| Sherlock | `sherlock X --print-found` | stdout `[+] Site: URL` lines |
+
+## CLI
+
 ```bash
-pip install aiohttp maigret sherlock-project && python recon.py --install-tools
+python recon.py <username>              # Full scan
+python recon.py <username> --skip-wmn   # Skip WhatsMyName
+python recon.py <username> --skip-external  # Skip external tools
+python recon.py --install-tools         # Auto-install everything
+python recon.py --web                   # Launch web UI
 ```
 
-## Usage
+## Environment Variables
 
-### Web UI (recommended)
-```bash
-python server.py
-# Opens at http://localhost:8420
-```
-
-### CLI
-```bash
-python recon.py johndoe                    # Full scan
-python recon.py johndoe --skip-wmn         # Skip WhatsMyName (faster)
-python recon.py johndoe --skip-external    # Skip Blackbird/Maigret/Sherlock
-python recon.py --web                      # Launch web UI
-```
-
-## What It Actually Does
-
-### Phase 1: Built-in API checks (50+ platforms)
-Direct HTTP requests to platform APIs. Extracts real profile data:
-- GitHub API: name, bio, repos, followers, creation date, email, blog, company, twitter
-- Reddit API: karma, account age, verification status
-- Bluesky API: display name, followers, posts, creation date
-- Chess.com API: rating, title, country, join date
-- Lichess API: game count, creation date
-- HackerNews API: karma, creation date
-- And 45+ more with status code / text matching detection
-
-### Phase 2: WhatsMyName Database (500+ sites)
-Downloads the actual WhatsMyName JSON database and runs every check using
-their detection logic (status codes + string matching).
-
-### Phase 3: External Tools
-Runs installed tools as subprocesses and merges their results:
-- **Blackbird**: Parses CLI output for found accounts
-- **Maigret**: Parses JSON output for claimed profiles
-- **Sherlock**: Parses stdout for found URLs
-
-### Deduplication & Cross-referencing
-When multiple sources find the same platform, confidence gets boosted.
-The richest data version is kept.
-
-## Cross-Reference Tools (clickable links in results)
-- WhatsMyName, DigitalFootprint, Epieos
-- breach.vip, search.0t.rocks
-- OSINT Framework, ASINT Collection, SpiderFoot
-- Google dorks, Yandex, Wayback Machine
-- WhitePages, PeekYou, HaveIBeenPwned, IPLocation
-
-## Files
-- `recon_engine.py` - Core scanning engine
-- `server.py` - Web UI server (http://localhost:8420)
-- `recon.py` - CLI interface
-- `README.md` - This file
-
-## Export Formats
-- JSON (full structured data)
-- CSV (platform, category, URL, confidence, source)
-- TXT (human-readable report)
+- `BLACKBIRD_PATH` - Custom path to Blackbird directory
+- `SPIDERFOOT_PATH` - Custom path to SpiderFoot directory
