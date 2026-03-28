@@ -15,7 +15,7 @@ irm https://raw.githubusercontent.com/togg53192-cmd/recon/main/install.ps1 | iex
 Web UI (recommended)
 
 ```bash
-powershellrecon-web
+recon-web
 ```
 Opens a browser at http://localhost:8420. Keep the terminal window open while using it. Search Can take around 5 min or more
 
