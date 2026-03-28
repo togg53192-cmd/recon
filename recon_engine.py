@@ -301,138 +301,517 @@ async def run_wmn_checks(username, callback=None):
 
 
 # =================================================================
-# PHASE 3: EXTERNAL TOOLS (Blackbird, Maigret, Sherlock)
+# PHASE 3: EXTERNAL TOOLS
+# =================================================================
+# Each tool: find it, run it as subprocess, parse output.
+# Supports: Blackbird, SpiderFoot, Maigret, Sherlock
 # =================================================================
 
 def find_tool(name):
     return shutil.which(name) is not None
 
-def find_blackbird():
-    """Find blackbird.py in common locations."""
-    candidates = [
-        Path("blackbird") / "blackbird.py",
-        Path("../blackbird") / "blackbird.py",
-        Path.home() / "blackbird" / "blackbird.py",
-        Path(".") / "blackbird.py",
+
+def _find_script(name, filenames, extra_dirs=None):
+    """Search common locations for a Python script."""
+    dirs = [
+        Path("."),
+        Path(".."),
+        Path.home(),
+        Path.cwd(),
     ]
-    for c in candidates:
-        if c.exists(): return str(c.resolve())
-    # Check if blackbird is a pip-installed CLI
+    if extra_dirs:
+        dirs.extend(Path(d) for d in extra_dirs)
+
+    for d in dirs:
+        for fn in filenames:
+            for sub in [name, ""]:
+                p = d / sub / fn if sub else d / fn
+                if p.exists():
+                    return str(p.resolve())
+    return None
+
+
+# ── Blackbird ────────────────────────────────────────────────────
+
+def find_blackbird():
+    """Find blackbird.py — checks common locations and PATH."""
+    found = _find_script("blackbird", ["blackbird.py"],
+                         extra_dirs=[os.environ.get("BLACKBIRD_PATH","")])
+    if found: return found
     if find_tool("blackbird"): return "blackbird"
     return None
 
-def run_blackbird(username, search_type="username"):
-    """Run Blackbird and parse its output."""
-    bb_path = find_blackbird()
-    if not bb_path: return [], False
-
+def run_blackbird(username, search_type="username", callback=None):
+    bb = find_blackbird()
+    if not bb: return [], False
     CACHE_DIR.mkdir(exist_ok=True)
+
+    if callback: callback("tool_start", 0, 0, "Blackbird")
     results = []
 
     try:
-        if bb_path == "blackbird":
-            cmd = ["blackbird"]
-        else:
-            cmd = [sys.executable, bb_path]
-
+        cmd = ["blackbird"] if bb == "blackbird" else [sys.executable, bb]
         if search_type == "email":
             cmd.extend(["--email", username])
         else:
             cmd.extend(["--username", username])
-
-        # Add CSV export flag
         cmd.extend(["--csv", "--no-update"])
 
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300,
-                              cwd=str(Path(bb_path).parent) if bb_path != "blackbird" else None)
+        cwd = str(Path(bb).parent) if bb != "blackbird" else None
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=cwd)
+        output = (proc.stdout or "") + "\n" + (proc.stderr or "")
 
-        output = proc.stdout or ""
-        # Parse CLI output: look for "[+]" lines indicating found accounts
+        # Parse Blackbird stdout — multiple known formats
         for line in output.splitlines():
-            # Blackbird format: [+] - #ID AppName account found - URL [status]
-            m = re.search(r'\[\+\].*?(\S+)\s+account found\s*-\s*(https?://\S+)', line)
+            # Format: [+] - #ID SiteName account found - URL [status]
+            m = re.search(
+                r'\[\+\].*?#\d+\s+(.+?)\s+account found\s*-\s*(https?://\S+)', line)
+            if not m:
+                # Simpler: [+] SiteName - URL
+                m = re.search(r'\[\+\]\s*(.+?)\s*-\s*(https?://\S+)', line)
             if m:
                 results.append(Result(
-                    platform=m.group(1).strip(),
-                    profile_url=m.group(2).strip(),
-                    category="Other", exists=True, confidence=82,
-                    source="blackbird"
-                ))
-                continue
-            # Alt format: [+] - #N PlatformName account found - URL
-            m2 = re.search(r'\[\+\].*?#\d+\s+(.+?)\s+account found\s*-\s*(https?://\S+)', line)
-            if m2:
-                results.append(Result(
-                    platform=m2.group(1).strip(),
-                    profile_url=m2.group(2).strip(),
-                    category="Other", exists=True, confidence=82,
-                    source="blackbird"
-                ))
+                    platform=m.group(1).strip(), profile_url=m.group(2).strip().rstrip("]"),
+                    category="Other", exists=True, confidence=82, source="blackbird"))
 
-        # Also try to parse any CSV output files
-        csv_files = glob.glob(str(CACHE_DIR / f"*{username}*.csv")) + \
-                    glob.glob(f"*{username}*.csv") + \
-                    glob.glob("results/*.csv")
-        for csv_path in csv_files:
-            try:
-                with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
-                    lines = f.readlines()
-                for line in lines[1:]:  # skip header
-                    parts = line.strip().split(",")
-                    if len(parts) >= 3 and "FOUND" in line.upper():
-                        results.append(Result(
-                            platform=parts[0].strip('"'),
-                            profile_url=parts[1].strip('"') if parts[1].startswith("http") else parts[2].strip('"'),
-                            category="Other", exists=True, confidence=82,
-                            source="blackbird"
-                        ))
-            except: pass
+        # Parse CSV output files Blackbird may have created
+        for pattern in [f"*{username}*.csv", "results/*.csv"]:
+            for csv_path in glob.glob(pattern) + glob.glob(str(CACHE_DIR/pattern)):
+                try:
+                    with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
+                        for line in f.readlines()[1:]:
+                            if "FOUND" not in line.upper(): continue
+                            parts = [p.strip('" \t') for p in line.split(",")]
+                            url = next((p for p in parts if p.startswith("http")), None)
+                            if url and parts[0]:
+                                results.append(Result(
+                                    platform=parts[0], profile_url=url,
+                                    category="Other", exists=True,
+                                    confidence=82, source="blackbird"))
+                except: pass
 
+        # Parse JSON output files
+        for pattern in [f"*{username}*.json"]:
+            for jp in glob.glob(pattern) + glob.glob(str(CACHE_DIR/pattern)):
+                try:
+                    with open(jp, "r", encoding="utf-8") as f:
+                        jdata = json.load(f)
+                    if isinstance(jdata, list):
+                        for item in jdata:
+                            if isinstance(item, dict) and item.get("status") == "FOUND":
+                                results.append(Result(
+                                    platform=item.get("app","Unknown"),
+                                    profile_url=item.get("url",""),
+                                    category="Other", exists=True,
+                                    confidence=82, source="blackbird",
+                                    info=item.get("metadata",{}) or {}))
+                except: pass
+
+        if callback: callback("tool_done", len(results), 0, "Blackbird")
         return results, True
     except subprocess.TimeoutExpired:
+        if callback: callback("tool_done", 0, 0, "Blackbird (timeout)")
         return [], True
-    except Exception:
+    except Exception as e:
+        if callback: callback("tool_error", 0, 0, f"Blackbird: {e}")
         return [], True
 
-def run_maigret(username):
+
+# ── SpiderFoot ───────────────────────────────────────────────────
+
+def find_spiderfoot():
+    """Find sf.py — SpiderFoot's main entry point."""
+    found = _find_script("spiderfoot", ["sf.py"],
+                         extra_dirs=[
+                             os.environ.get("SPIDERFOOT_PATH",""),
+                             "spiderfoot-4.0",
+                         ])
+    if found: return found
+    # Check if spiderfoot is a pip-installed CLI
+    if find_tool("spiderfoot"): return "spiderfoot"
+    if find_tool("sf"): return "sf"
+    return None
+
+def run_spiderfoot(username, search_type="username", callback=None):
+    """Run SpiderFoot CLI scan and parse JSON results.
+
+    SpiderFoot CLI:
+        python3 sf.py -s "username" -o json -u passive
+    For emails:
+        python3 sf.py -s "user@example.com" -o json -u passive
+    """
+    sf = find_spiderfoot()
+    if not sf: return [], False
+    CACHE_DIR.mkdir(exist_ok=True)
+
+    if callback: callback("tool_start", 0, 0, "SpiderFoot")
+    results = []
+
+    try:
+        if sf in ("spiderfoot", "sf"):
+            cmd = [sf]
+        else:
+            cmd = [sys.executable, sf]
+
+        # Quote the target for SpiderFoot (it auto-detects usernames)
+        target = username
+        cmd.extend(["-s", target, "-o", "json", "-u", "passive", "-q"])
+
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+                              cwd=str(Path(sf).parent) if sf not in ("spiderfoot","sf") else None)
+        output = proc.stdout or ""
+
+        # SpiderFoot JSON output is an array of event objects:
+        # [{"type": "SOCIAL_MEDIA", "data": "...", "module": "sfp_accounts", "source": "..."}, ...]
+        # Also can be tab-delimited: Source\tType\tSourceData\tData
+        try:
+            events = json.loads(output)
+            if isinstance(events, list):
+                for ev in events:
+                    if not isinstance(ev, dict): continue
+                    etype = ev.get("type","")
+                    data = ev.get("data","")
+                    module = ev.get("module","")
+                    source_data = ev.get("source","")
+
+                    # Social media / account / username events
+                    if any(t in etype.upper() for t in [
+                        "SOCIAL_MEDIA", "ACCOUNT", "USERNAME",
+                        "AFFILIATE_", "EMAILADDR", "HUMAN_NAME",
+                        "PHONE_NUMBER", "GEOINFO", "WEBSERVER_BANNER",
+                        "LINKED_URL", "DOMAIN_NAME"
+                    ]):
+                        # Extract URL if present
+                        url_match = re.search(r'https?://\S+', data)
+                        url = url_match.group(0) if url_match else data
+
+                        # Determine platform name from module or data
+                        platform = module.replace("sfp_","").replace("_"," ").title()
+                        if not platform or platform == "Accounts":
+                            # Try to extract from URL
+                            try:
+                                from urllib.parse import urlparse
+                                platform = urlparse(url).netloc.replace("www.","").split(".")[0].title()
+                            except:
+                                platform = etype
+
+                        results.append(Result(
+                            platform=f"SF:{platform}",
+                            profile_url=url if url.startswith("http") else "",
+                            category=etype.replace("_"," ").title(),
+                            exists=True, confidence=78, source="spiderfoot",
+                            info={"event_type": etype, "module": module, "raw": data[:200]}
+                        ))
+        except json.JSONDecodeError:
+            # Fall back to tab-delimited parsing
+            for line in output.splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 4:
+                    src, etype, src_data, data = parts[0], parts[1], parts[2], parts[3]
+                    if any(t in etype.upper() for t in ["SOCIAL","ACCOUNT","USERNAME","EMAIL"]):
+                        url_match = re.search(r'https?://\S+', data)
+                        results.append(Result(
+                            platform=f"SF:{src.replace('sfp_','').title()}",
+                            profile_url=url_match.group(0) if url_match else data,
+                            category=etype.replace("_"," ").title(),
+                            exists=True, confidence=78, source="spiderfoot",
+                            info={"event_type": etype, "raw": data[:200]}
+                        ))
+
+        if callback: callback("tool_done", len(results), 0, "SpiderFoot")
+        return results, True
+
+    except subprocess.TimeoutExpired:
+        if callback: callback("tool_done", 0, 0, "SpiderFoot (timeout 600s)")
+        return [], True
+    except Exception as e:
+        if callback: callback("tool_error", 0, 0, f"SpiderFoot: {e}")
+        return [], True
+
+
+# ── Maigret ──────────────────────────────────────────────────────
+
+def run_maigret(username, callback=None):
     if not find_tool("maigret"): return [], False
     CACHE_DIR.mkdir(exist_ok=True)
     outfile = CACHE_DIR / f"maigret_{username}.json"
+
+    if callback: callback("tool_start", 0, 0, "Maigret")
     results = []
     try:
-        subprocess.run(["maigret", username, "--json", "simple", "-o", str(outfile),
-                        "--timeout", "10", "--no-color"],
-                       capture_output=True, text=True, timeout=240)
+        subprocess.run(
+            ["maigret", username, "--json", "simple", "-o", str(outfile),
+             "--timeout", "10", "--no-color"],
+            capture_output=True, text=True, timeout=300)
+
         if outfile.exists():
-            with open(outfile, "r", encoding="utf-8") as f: data = json.load(f)
+            with open(outfile, "r", encoding="utf-8") as f:
+                data = json.load(f)
             if isinstance(data, dict):
                 items = data.get("results", data)
                 if isinstance(items, dict):
                     for name, sd in items.items():
-                        if isinstance(sd, dict):
-                            url = sd.get("url_user", sd.get("url",""))
-                            if "Claimed" in str(sd.get("status","")) or sd.get("exists") is True:
-                                results.append(Result(
-                                    platform=name, profile_url=url,
-                                    category=sd.get("tags",["Other"])[0] if isinstance(sd.get("tags"),list) else "Other",
-                                    exists=True, confidence=80, source="maigret"))
-        return results, True
-    except: return [], True
+                        if not isinstance(sd, dict): continue
+                        url = sd.get("url_user", sd.get("url",""))
+                        status = str(sd.get("status",""))
+                        if "Claimed" in status or sd.get("exists") is True:
+                            tags = sd.get("tags",[])
+                            cat = tags[0] if isinstance(tags,list) and tags else "Other"
+                            info = {}
+                            for k in ["fullname","bio","location","gender","links"]:
+                                if sd.get(k): info[k] = sd[k]
+                            results.append(Result(
+                                platform=name, profile_url=url, category=cat,
+                                exists=True, confidence=80, source="maigret",
+                                info=info))
 
-def run_sherlock(username):
+        if callback: callback("tool_done", len(results), 0, "Maigret")
+        return results, True
+    except subprocess.TimeoutExpired:
+        if callback: callback("tool_done", 0, 0, "Maigret (timeout)")
+        return [], True
+    except Exception as e:
+        if callback: callback("tool_error", 0, 0, f"Maigret: {e}")
+        return [], True
+
+
+# ── Sherlock ─────────────────────────────────────────────────────
+
+def run_sherlock(username, callback=None):
     if not find_tool("sherlock"): return [], False
+
+    if callback: callback("tool_start", 0, 0, "Sherlock")
     results = []
     try:
-        proc = subprocess.run(["sherlock", username, "--timeout", "10", "--print-found"],
-                              capture_output=True, text=True, timeout=240)
+        proc = subprocess.run(
+            ["sherlock", username, "--timeout", "10", "--print-found"],
+            capture_output=True, text=True, timeout=300)
+
         for line in (proc.stdout or "").splitlines():
             m = re.match(r'\[\+\]\s*(.+?):\s*(https?://\S+)', line.strip())
             if m:
                 results.append(Result(
                     platform=m.group(1).strip(), profile_url=m.group(2).strip(),
                     category="Other", exists=True, confidence=75, source="sherlock"))
+
+        if callback: callback("tool_done", len(results), 0, "Sherlock")
         return results, True
-    except: return [], True
+    except subprocess.TimeoutExpired:
+        if callback: callback("tool_done", 0, 0, "Sherlock (timeout)")
+        return [], True
+    except Exception as e:
+        if callback: callback("tool_error", 0, 0, f"Sherlock: {e}")
+        return [], True
+
+
+# ── Auto-installer ───────────────────────────────────────────────
+
+def install_tools(tools=None):
+    """Install OSINT tools. tools: list of tool names or None for all."""
+    available = {
+        "maigret":   {"pip": "maigret"},
+        "sherlock":  {"pip": "sherlock-project"},
+        "holehe":    {"pip": "holehe"},
+        "blackbird": {"git": "https://github.com/p1ngul1n0/blackbird.git",
+                      "req": "requirements.txt"},
+        "spiderfoot": {"git": "https://github.com/smicallef/spiderfoot.git",
+                       "req": "requirements.txt"},
+    }
+    to_install = tools or list(available.keys())
+    installed = []
+
+    for name in to_install:
+        spec = available.get(name)
+        if not spec:
+            print(f"  [!] Unknown tool: {name}")
+            continue
+
+        if "pip" in spec:
+            print(f"  [*] pip install {spec['pip']}...")
+            r = subprocess.run([sys.executable, "-m", "pip", "install", spec["pip"]],
+                               capture_output=True, text=True)
+            if r.returncode == 0:
+                print(f"  [+] {name} installed via pip")
+                installed.append(name)
+            else:
+                print(f"  [!] Failed: {r.stderr[:200]}")
+
+        elif "git" in spec:
+            target_dir = Path(name)
+            if target_dir.exists():
+                print(f"  [*] {name}/ already exists, skipping clone")
+            else:
+                print(f"  [*] git clone {spec['git']}...")
+                r = subprocess.run(["git", "clone", spec["git"]],
+                                   capture_output=True, text=True)
+                if r.returncode != 0:
+                    print(f"  [!] git clone failed: {r.stderr[:200]}")
+                    continue
+
+            if spec.get("req"):
+                req_path = target_dir / spec["req"]
+                if req_path.exists():
+                    print(f"  [*] Installing {name} requirements...")
+                    subprocess.run([sys.executable, "-m", "pip", "install",
+                                    "-r", str(req_path)],
+                                   capture_output=True, text=True)
+            print(f"  [+] {name} installed via git clone")
+            installed.append(name)
+
+    return installed
+
+
+# =================================================================
+# INPUT TYPE DETECTION
+# =================================================================
+
+def detect_input_type(query):
+    """Detect if input is email, phone, URL, IP, or username."""
+    q = query.strip()
+    if re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]+$', q): return "email"
+    if re.match(r'^\+?\d[\d\s\-()]{7,}$', q): return "phone"
+    if re.match(r'^https?://', q): return "url"
+    if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', q): return "ip"
+    return "username"
+
+
+# =================================================================
+# EMAIL-SPECIFIC OSINT CHECKS
+# =================================================================
+
+EMAIL_PLATFORMS = [
+    # Services where we can check if an email is registered via password reset / signup
+    {"name":"Gravatar (email)","cat":"Identity",
+     "url":"https://en.gravatar.com/{}.json",
+     "method":"status","ok":200,"fail":[404],"rel":0.95,
+     "profile":"https://gravatar.com/{}",
+     "hash_email": True,  # needs md5 hash of email
+     "extract":{"displayName":"entry.0.displayName","aboutMe":"entry.0.aboutMe",
+                "preferredUsername":"entry.0.preferredUsername",
+                "currentLocation":"entry.0.currentLocation"}},
+    {"name":"GitHub (email)","cat":"Developer",
+     "url":"https://api.github.com/search/users?q={}+in:email",
+     "method":"github_email","rel":0.90,
+     "profile":"https://github.com/search?q={}&type=users"},
+    {"name":"Spotify (signup check)","cat":"Content",
+     "url":"https://spclient.wg.spotify.com/signup/public/v1/account?validate=1&email={}",
+     "method":"spotify_email","rel":0.85,
+     "profile":"https://open.spotify.com/"},
+]
+
+async def check_email_platform(session, p, email):
+    """Check email-specific platforms."""
+    target = email
+    if p.get("hash_email"):
+        import hashlib
+        target = hashlib.md5(email.lower().strip().encode()).hexdigest()
+
+    url = p["url"].replace("{}", target)
+    profile = p["profile"].replace("{}", target)
+    r = Result(platform=p["name"], category=p["cat"], profile_url=profile,
+               exists=None, source="recon-email")
+
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=12),
+                               allow_redirects=True, headers=HEADERS, ssl=False) as resp:
+            r.status_code = resp.status
+            body = await resp.text(errors="replace")
+            method = p["method"]
+
+            if method == "status":
+                if resp.status == p.get("ok",200):
+                    r.exists = True; r.confidence = p["rel"] * 100
+                elif resp.status in p.get("fail",[404]):
+                    r.exists = False; r.confidence = p["rel"] * 100
+                else:
+                    r.exists = None; r.confidence = 25
+
+                if r.exists and "extract" in p:
+                    try:
+                        jdata = json.loads(body)
+                        r.info = extract_info(jdata, p["extract"])
+                    except: pass
+
+            elif method == "github_email":
+                try:
+                    data = json.loads(body)
+                    if data.get("total_count", 0) > 0:
+                        r.exists = True; r.confidence = 90
+                        items = data.get("items", [])
+                        if items:
+                            user = items[0]
+                            r.profile_url = user.get("html_url", profile)
+                            r.info = {"login": user.get("login"),
+                                      "avatar": user.get("avatar_url")}
+                    else:
+                        r.exists = False; r.confidence = 85
+                except:
+                    r.exists = None; r.confidence = 15
+
+            elif method == "spotify_email":
+                try:
+                    data = json.loads(body)
+                    status_val = data.get("status", 0)
+                    # status 20 = email already registered
+                    if status_val == 20:
+                        r.exists = True; r.confidence = 85
+                    else:
+                        r.exists = False; r.confidence = 80
+                except:
+                    r.exists = None; r.confidence = 15
+
+    except: pass
+    return r
+
+async def run_email_checks(email, callback=None):
+    """Run email-specific platform checks."""
+    results = []
+    connector = aiohttp.TCPConnector(limit=10, ttl_dns_cache=300)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [check_email_platform(session, p, email) for p in EMAIL_PLATFORMS]
+        for coro in asyncio.as_completed(tasks):
+            r = await coro
+            results.append(r)
+            if callback and r.exists:
+                callback("builtin", 0, 0, r)
+    return results
+
+
+# ── Holehe (email to account checker) ────────────────────────────
+
+def run_holehe(email, callback=None):
+    """Run holehe to check which services an email is registered on.
+    holehe outputs: [+] service.com
+    """
+    if not find_tool("holehe"): return [], False
+
+    if callback: callback("tool_start", 0, 0, "Holehe")
+    results = []
+    try:
+        proc = subprocess.run(
+            ["holehe", email, "--no-color"],
+            capture_output=True, text=True, timeout=180)
+
+        for line in (proc.stdout or "").splitlines():
+            line = line.strip()
+            # holehe format: [+] service.com exists
+            m = re.match(r'\[\+\]\s*(\S+)', line)
+            if m and "exists" in line.lower() or ("[+]" in line and "not" not in line.lower()):
+                service = m.group(1) if m else line
+                results.append(Result(
+                    platform=service.strip(),
+                    profile_url=f"https://{service.strip()}",
+                    category="Email Registration",
+                    exists=True, confidence=78, source="holehe"))
+
+        if callback: callback("tool_done", len(results), 0, "Holehe")
+        return results, True
+    except subprocess.TimeoutExpired:
+        if callback: callback("tool_done", 0, 0, "Holehe (timeout)")
+        return [], True
+    except Exception as e:
+        if callback: callback("tool_error", 0, 0, f"Holehe: {e}")
+        return [], True
 
 
 # =================================================================
@@ -517,52 +896,103 @@ async def full_scan(username, skip_wmn=False, skip_external=False, callback=None
     """Run all phases and return structured report."""
     sources = ["RECON built-in"]
     all_results = []
+    input_type = detect_input_type(username)
 
     # Phase 1
-    if callback: callback("phase", 1, 3, "Built-in platform checks")
-    builtin = await run_builtin_checks(username, callback)
-    all_results.extend(builtin)
+    if callback: callback("phase", 1, 4, "Built-in platform checks")
 
-    # Phase 2
+    if input_type == "email":
+        # Run email-specific checks
+        if callback: callback("phase", 1, 4, "Email-specific checks")
+        email_results = await run_email_checks(username, callback)
+        all_results.extend(email_results)
+        sources.append("Email checks")
+
+        # Also extract username from email for username-based checks
+        email_username = username.split("@")[0]
+        builtin = await run_builtin_checks(email_username, callback)
+        all_results.extend(builtin)
+        if callback: callback("tool_done", 0, 0, f"Also checked username '{email_username}' from email")
+    else:
+        builtin = await run_builtin_checks(username, callback)
+        all_results.extend(builtin)
+
+    # Phase 2: WhatsMyName
     if not skip_wmn:
-        if callback: callback("phase", 2, 3, "WhatsMyName database (500+ sites)")
-        wmn = await run_wmn_checks(username, callback)
+        if callback: callback("phase", 2, 4, "WhatsMyName database (500+ sites)")
+        search_target = username.split("@")[0] if input_type == "email" else username
+        wmn = await run_wmn_checks(search_target, callback)
         all_results.extend(wmn)
         sources.append("WhatsMyName")
 
-    # Phase 3
+    # Phase 3: External tools
     if not skip_external:
-        if callback: callback("phase", 3, 3, "External tools")
+        if callback: callback("phase", 3, 4, "External tools (Blackbird, SpiderFoot, Maigret, Sherlock)")
 
-        bb_results, bb_found = run_blackbird(username)
+        # Blackbird (supports both --username and --email)
+        bb_search = "email" if input_type == "email" else "username"
+        bb_results, bb_found = run_blackbird(username, search_type=bb_search, callback=callback)
         if bb_found: sources.append("Blackbird")
         all_results.extend(bb_results)
+        if callback and bb_results:
+            for r in bb_results: callback("ext_found", 0, 0, r)
 
-        mg_results, mg_found = run_maigret(username)
+        # SpiderFoot (auto-detects target type)
+        sf_results, sf_found = run_spiderfoot(username, callback=callback)
+        if sf_found: sources.append("SpiderFoot")
+        all_results.extend(sf_results)
+        if callback and sf_results:
+            for r in sf_results: callback("ext_found", 0, 0, r)
+
+        # Maigret (username only)
+        search_target = username.split("@")[0] if input_type == "email" else username
+        mg_results, mg_found = run_maigret(search_target, callback=callback)
         if mg_found: sources.append("Maigret")
         all_results.extend(mg_results)
+        if callback and mg_results:
+            for r in mg_results: callback("ext_found", 0, 0, r)
 
-        sh_results, sh_found = run_sherlock(username)
+        # Sherlock (username only)
+        sh_results, sh_found = run_sherlock(search_target, callback=callback)
         if sh_found: sources.append("Sherlock")
         all_results.extend(sh_results)
+        if callback and sh_results:
+            for r in sh_results: callback("ext_found", 0, 0, r)
 
-    # Deduplicate
+        # Holehe (email only)
+        if input_type == "email":
+            ho_results, ho_found = run_holehe(username, callback=callback)
+            if ho_found: sources.append("Holehe")
+            all_results.extend(ho_results)
+            if callback and ho_results:
+                for r in ho_results: callback("ext_found", 0, 0, r)
+
+        if not any([bb_found, sf_found, mg_found, sh_found]):
+            if callback: callback("tool_error", 0, 0,
+                "No external tools found. Run: python recon.py --install-tools")
+
+    # Phase 4: Finalize
+    if callback: callback("phase", 4, 4, "Deduplication & ranking")
+
     all_results = deduplicate(all_results)
 
     found = sorted([r for r in all_results if r.exists is True], key=lambda r: -r.confidence)
     not_found = [r for r in all_results if r.exists is False]
     errors = [r for r in all_results if r.exists is None]
-    variants = generate_variants(username)
+    variants = generate_variants(username.split("@")[0] if input_type == "email" else username)
     xref = xref_links(username)
 
     report = {
         "target": username,
+        "input_type": input_type,
         "timestamp": datetime.now().isoformat(),
         "sources": sources,
         "tools_status": {
             "blackbird": find_blackbird() is not None,
+            "spiderfoot": find_spiderfoot() is not None,
             "maigret": find_tool("maigret"),
             "sherlock": find_tool("sherlock"),
+            "holehe": find_tool("holehe"),
         },
         "summary": {
             "checked": len(all_results),
