@@ -1,13 +1,45 @@
 # RECON - Multi-Source OSINT Aggregator
 
-# Download the folder 
-
-```bash
-irm https://raw.githubusercontent.com/togg53192-cmd/recon/main/install.ps1 | iex
-```
-
 A real OSINT tool that makes actual HTTP requests, integrates with Blackbird/Maigret/Sherlock,
 downloads the WhatsMyName database (500+ sites), and serves results in a web UI.
+
+# Installation (Windows)
+
+Open PowerShell and run:
+
+```bash
+powershellSet-ExecutionPolicy RemoteSigned -Scope CurrentUser
+irm https://raw.githubusercontent.com/togg53192-cmd/recon/main/install.ps1 |
+```
+# Usage
+
+Web UI (recommended)
+
+```bash
+powershellrecon-web
+```
+Opens a browser at http://localhost:8420. Keep the terminal window open while using it.
+
+# Command Line
+
+```bash
+recon johndoe
+```
+ Full scan
+
+```bash
+recon johndoe --skip-wmn      
+```
+Skip WhatsMyName (faster)
+
+```bash
+recon johndoe --skip-external  
+```
+Skip Blackbird/Maigret/Sherlock
+
+## Uninstall
+
+Delete the folder C:\Users\<you>\recon and remove it from your PATH in System Settings.
 
 ## Quick Setup
 
