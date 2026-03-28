@@ -7,7 +7,8 @@ import asyncio, sys, os, json, argparse
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from recon_engine import full_scan, find_blackbird, find_tool, PLATFORMS, generate_variants
+from recon_engine import (full_scan, find_blackbird, find_spiderfoot, find_tool,
+                         PLATFORMS, generate_variants, install_tools, detect_input_type)
 
 def cli_callback(event, current, total, detail):
     if event == "phase":
@@ -27,6 +28,15 @@ def cli_callback(event, current, total, detail):
     elif event == "wmn_progress":
         if current % 100 == 0 or current == total:
             print(f"      [{current}/{total}] checked...", flush=True)
+    elif event == "tool_start":
+        print(f"  [*] Running {detail}...", flush=True)
+    elif event == "tool_done":
+        print(f"  [+] {detail}: {current} accounts found")
+    elif event == "tool_error":
+        print(f"  [!] {detail}")
+    elif event == "ext_found":
+        if detail and hasattr(detail, 'platform'):
+            print(f"      [+] {detail.platform:<20} -> {detail.profile_url}")
 
 async def main():
     parser = argparse.ArgumentParser(description="RECON - Multi-Source OSINT Aggregator")
@@ -38,11 +48,9 @@ async def main():
     args = parser.parse_args()
 
     if args.install_tools:
-        import subprocess
-        for pkg in ["maigret", "sherlock-project", "aiohttp"]:
-            print(f"  Installing {pkg}...")
-            subprocess.run([sys.executable, "-m", "pip", "install", pkg], capture_output=True)
-        print("  Done. You can also: git clone https://github.com/p1ngul1n0/blackbird.git")
+        print("\n  Installing OSINT tools...\n")
+        install_tools()
+        print("\n  Done! Now run: python recon.py <username>")
         return
 
     if args.web:
@@ -55,14 +63,18 @@ async def main():
         return
 
     username = args.username.strip()
+    input_type = detect_input_type(username)
     print(f"\n{'='*70}")
     print(f"  RECON - Multi-Source OSINT Aggregator")
-    print(f"  Target:    {username}")
-    print(f"  Time:      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"  Built-in:  {len(PLATFORMS)} platforms")
-    print(f"  Blackbird: {'YES' if find_blackbird() else 'no  (git clone https://github.com/p1ngul1n0/blackbird.git)'}")
-    print(f"  Maigret:   {'YES' if find_tool('maigret') else 'no  (pip install maigret)'}")
-    print(f"  Sherlock:  {'YES' if find_tool('sherlock') else 'no  (pip install sherlock-project)'}")
+    print(f"  Target:      {username}")
+    print(f"  Type:        {input_type}")
+    print(f"  Time:        {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Built-in:    {len(PLATFORMS)} platforms")
+    print(f"  Blackbird:   {'YES' if find_blackbird() else 'no  (git clone https://github.com/p1ngul1n0/blackbird.git)'}")
+    print(f"  SpiderFoot:  {'YES' if find_spiderfoot() else 'no  (git clone https://github.com/smicallef/spiderfoot.git)'}")
+    print(f"  Maigret:     {'YES' if find_tool('maigret') else 'no  (pip install maigret)'}")
+    print(f"  Sherlock:    {'YES' if find_tool('sherlock') else 'no  (pip install sherlock-project)'}")
+    print(f"  Holehe:      {'YES' if find_tool('holehe') else 'no  (pip install holehe)'}")
     print(f"{'='*70}")
 
     report = await full_scan(username, skip_wmn=args.skip_wmn,
