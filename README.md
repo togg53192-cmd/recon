@@ -17,7 +17,7 @@ Web UI (recommended)
 ```bash
 recon-web
 ```
-Opens a browser at http://localhost:8420. Keep the terminal window open while using it. Search Can take around 5 min or more
+Opens a browser at http://localhost:8420. Keep the terminal window open while using it. Search Can take around 15 min or more
 
 # Command Line
 
