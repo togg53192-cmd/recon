@@ -1,8 +1,6 @@
 # RECON - One-Click Installer for Windows PowerShell
 # Usage: irm https://raw.githubusercontent.com/togg53192-cmd/recon/main/install.ps1 | iex
 
-$ErrorActionPreference = "Stop"
-
 $RAW_URL     = "https://raw.githubusercontent.com/togg53192-cmd/recon/main"
 $INSTALL_DIR = "$env:USERPROFILE\recon"
 $FILES       = @("recon.py", "recon_engine.py", "server.py", "setup_and_run.bat", "README.md")
@@ -11,7 +9,7 @@ function Write-Header {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host "    RECON - Multi-Source OSINT Aggregator" -ForegroundColor Cyan
-    Write-Host "    Installer v2.1" -ForegroundColor Cyan
+    Write-Host "    Installer v2.2" -ForegroundColor Cyan
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -47,16 +45,6 @@ function Check-Python {
         exit 1
     }
     return $py
-}
-
-# ── Get Python version tuple ──────────────────────────────────────────────────
-
-function Get-PythonVersion($py) {
-    $ver = & $py --version 2>&1
-    if ($ver -match "Python (\d+)\.(\d+)") {
-        return @([int]$Matches[1], [int]$Matches[2])
-    }
-    return @(3, 10)
 }
 
 # ── Check Git ─────────────────────────────────────────────────────────────────
@@ -146,14 +134,16 @@ function Install-SpiderFoot($py, $hasGit) {
         return
     }
 
-    # lxml on Windows requires pre-built wheels - try newest first, fall back
+    # Install lxml using pre-built wheel only - avoid compiling from source
     Write-Step "Installing lxml (pre-built wheel for Windows)..."
     $lxmlOk = $false
-    foreach ($ver in @("lxml==5.3.0", "lxml==5.2.2", "lxml==4.9.4", "lxml")) {
-        Write-Info "Trying $ver..."
-        $result = & $py -m pip install --quiet --only-binary=:all: $ver 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-OK "lxml installed ($ver)."
+    foreach ($lxmlVer in @("lxml==5.3.0", "lxml==5.2.2", "lxml==4.9.4", "lxml")) {
+        Write-Info "Trying $lxmlVer..."
+        # Use Start-Process so pip warnings don't get caught as PowerShell errors
+        $proc = Start-Process $py -ArgumentList "-m pip install --quiet --only-binary=:all: $lxmlVer" `
+                    -Wait -PassThru -NoNewWindow
+        if ($proc.ExitCode -eq 0) {
+            Write-OK "lxml installed ($lxmlVer)."
             $lxmlOk = $true
             break
         }
@@ -161,7 +151,7 @@ function Install-SpiderFoot($py, $hasGit) {
 
     if (-not $lxmlOk) {
         Write-Fail "Could not install lxml - SpiderFoot skipped."
-        Write-Info "You can try manually: pip install lxml --only-binary=:all:"
+        Write-Info "Try manually: pip install lxml --only-binary=:all:"
         return
     }
 
@@ -174,18 +164,19 @@ function Install-SpiderFoot($py, $hasGit) {
         & git clone --quiet https://github.com/smicallef/spiderfoot.git $dir
     }
 
-    # Install SpiderFoot deps but skip lxml since we already have it
+    # Filter lxml out of requirements so pip doesn't try to recompile it
     Write-Step "Installing SpiderFoot dependencies..."
-    $reqFile = "$dir\requirements.txt"
-    $filteredReq = "$INSTALL_DIR\spiderfoot_requirements_filtered.txt"
-
-    # Filter out lxml from requirements so pip doesn't try to recompile it
-    Get-Content $reqFile | Where-Object { $_ -notmatch "^lxml" } | Set-Content $filteredReq
-
-    & $py -m pip install --quiet -r $filteredReq
+    $filteredReq = "$INSTALL_DIR\sf_req_filtered.txt"
+    Get-Content "$dir\requirements.txt" | Where-Object { $_ -notmatch "^lxml" } | Set-Content $filteredReq
+    $proc = Start-Process $py -ArgumentList "-m pip install --quiet -r `"$filteredReq`"" `
+                -Wait -PassThru -NoNewWindow
     Remove-Item $filteredReq -ErrorAction SilentlyContinue
 
-    Write-OK "SpiderFoot ready."
+    if ($proc.ExitCode -eq 0) {
+        Write-OK "SpiderFoot ready."
+    } else {
+        Write-Fail "SpiderFoot dependencies failed to install. It may not work correctly."
+    }
 }
 
 # ── Create launchers ──────────────────────────────────────────────────────────
