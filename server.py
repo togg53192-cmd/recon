@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 # Add parent dir to path so we can import the engine
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from recon_engine import full_scan, find_blackbird, find_spiderfoot, find_tool, PLATFORMS, detect_input_type
+from recon_engine import full_scan, find_blackbird, find_spiderfoot, find_tool, PLATFORMS, detect_input_type, get_tool_debug_info
 
 PORT = 8420
 
@@ -162,9 +162,25 @@ fetch('/api/status').then(r=>r.json()).then(d=>{
     {name:'Sherlock', ok:d.sherlock},
     {name:'Holehe', ok:d.holehe},
   ];
-  el.innerHTML = tools.map(t =>
+  let html = tools.map(t =>
     `<span class="tool-pill ${t.ok?'ok':'missing'}">${t.ok?'OK':'MISSING'} ${t.name}${t.count?' ('+t.count+')':''}</span>`
   ).join('');
+
+  // Show debug info if any tool missing
+  const missing = tools.filter(t => !t.ok && !['Built-in','WhatsMyName'].includes(t.name));
+  if(missing.length && d.debug){
+    html += `<div style="margin-top:10px;font-size:10px;font-family:'IBM Plex Mono',monospace;color:var(--dim);text-align:left;max-width:700px;margin-left:auto;margin-right:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px">
+      <div style="color:var(--orange);margin-bottom:6px">Tool Detection Debug:</div>
+      <div>Script dir: ${d.debug.script_dir}</div>
+      <div>CWD: ${d.debug.cwd}</div>
+      <div style="margin-top:4px">Blackbird path: ${d.debug.blackbird || 'NOT FOUND'}</div>
+      ${d.debug.blackbird_searched ? d.debug.blackbird_searched.map(s=>'<div style="color:#444">  '+s+'</div>').join('') : ''}
+      <div style="margin-top:4px">SpiderFoot path: ${d.debug.spiderfoot || 'NOT FOUND'}</div>
+      ${d.debug.spiderfoot_searched ? d.debug.spiderfoot_searched.map(s=>'<div style="color:#444">  '+s+'</div>').join('') : ''}
+      <div style="margin-top:8px;color:var(--blue)">Fix: clone tools into the same folder as server.py, then restart.</div>
+    </div>`;
+  }
+  el.innerHTML = html;
 });
 
 function startScan(){
@@ -458,6 +474,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(HTML_PAGE.encode("utf-8"))
 
         elif path == "/api/status":
+            debug = get_tool_debug_info()
             status = {
                 "builtin_count": len(PLATFORMS),
                 "blackbird": find_blackbird() is not None,
@@ -465,6 +482,7 @@ class Handler(BaseHTTPRequestHandler):
                 "maigret": find_tool("maigret"),
                 "sherlock": find_tool("sherlock"),
                 "holehe": find_tool("holehe"),
+                "debug": debug,
             }
             self._json(status)
 
@@ -517,15 +535,36 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    debug = get_tool_debug_info()
     print(f"\n  RECON Web Server")
     print(f"  ================")
     print(f"  Open in browser: http://localhost:{PORT}")
     print(f"  Built-in platforms: {len(PLATFORMS)}")
-    print(f"  Blackbird:   {'FOUND' if find_blackbird() else 'not found'}")
-    print(f"  SpiderFoot:  {'FOUND' if find_spiderfoot() else 'not found'}")
-    print(f"  Maigret:     {'FOUND' if find_tool('maigret') else 'not found'}")
-    print(f"  Sherlock:    {'FOUND' if find_tool('sherlock') else 'not found'}")
-    print(f"  Holehe:      {'FOUND' if find_tool('holehe') else 'not found'}")
+    print(f"")
+    print(f"  Script dir:  {debug['script_dir']}")
+    print(f"  Working dir: {debug['cwd']}")
+    print(f"")
+    bb = find_blackbird()
+    sf = find_spiderfoot()
+    print(f"  Blackbird:   {bb or 'NOT FOUND'}")
+    if not bb:
+        for s in debug.get('blackbird_searched', []):
+            print(f"    checked: {s}")
+    print(f"  SpiderFoot:  {sf or 'NOT FOUND'}")
+    if not sf:
+        for s in debug.get('spiderfoot_searched', []):
+            print(f"    checked: {s}")
+    print(f"  Maigret:     {'FOUND' if find_tool('maigret') else 'NOT FOUND (pip install maigret)'}")
+    print(f"  Sherlock:    {'FOUND' if find_tool('sherlock') else 'NOT FOUND (pip install sherlock-project)'}")
+    print(f"  Holehe:      {'FOUND' if find_tool('holehe') else 'NOT FOUND (pip install holehe)'}")
+    print(f"")
+    if not bb or not sf:
+        print(f"  TIP: Clone tools into this folder:")
+        print(f"    cd {debug['script_dir']}")
+        if not bb: print(f"    git clone https://github.com/p1ngul1n0/blackbird.git")
+        if not sf: print(f"    git clone https://github.com/smicallef/spiderfoot.git")
+        print(f"    Then restart server.py")
+        print(f"")
     print(f"  Press Ctrl+C to stop.\n")
 
     server = HTTPServer(("0.0.0.0", PORT), Handler)
