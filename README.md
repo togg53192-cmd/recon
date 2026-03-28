@@ -39,6 +39,7 @@ Skip Blackbird/Maigret/Sherlock
 ## Uninstall
 
 Delete the folder C:\Users\<you>\recon and remove it from your PATH in System Settings.
+
 ## Quick Start
 
 ```bash
