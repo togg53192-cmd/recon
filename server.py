@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 # Add parent dir to path so we can import the engine
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from recon_engine import full_scan, find_blackbird, find_tool, PLATFORMS
+from recon_engine import full_scan, find_blackbird, find_spiderfoot, find_tool, PLATFORMS, detect_input_type
 
 PORT = 8420
 
@@ -157,8 +157,10 @@ fetch('/api/status').then(r=>r.json()).then(d=>{
     {name:'Built-in', ok:true, count: d.builtin_count},
     {name:'WhatsMyName', ok:true, count:'500+'},
     {name:'Blackbird', ok:d.blackbird},
+    {name:'SpiderFoot', ok:d.spiderfoot},
     {name:'Maigret', ok:d.maigret},
     {name:'Sherlock', ok:d.sherlock},
+    {name:'Holehe', ok:d.holehe},
   ];
   el.innerHTML = tools.map(t =>
     `<span class="tool-pill ${t.ok?'ok':'missing'}">${t.ok?'OK':'MISSING'} ${t.name}${t.count?' ('+t.count+')':''}</span>`
@@ -423,6 +425,18 @@ def progress_callback(event, current, total, detail):
         pct = 40 + int((current / max(total,1)) * 40)  # 40-80%
         progress_state["pct"] = pct
         progress_state["msg"] = f"WhatsMyName: {current}/{total}"
+    elif event == "tool_start":
+        progress_state["pct"] = min(progress_state["pct"] + 2, 95)
+        progress_state["msg"] = f"Running {detail}..."
+        add_log(f"[*] Running {detail}...", "info")
+    elif event == "tool_done":
+        progress_state["pct"] = min(progress_state["pct"] + 5, 98)
+        add_log(f"[+] {detail}: {current} accounts found", "found" if current > 0 else "info")
+    elif event == "tool_error":
+        add_log(f"[!] {detail}", "err")
+    elif event == "ext_found":
+        if detail and hasattr(detail, 'platform'):
+            add_log(f"    [+] {detail.platform} -> {detail.profile_url}", "found")
 
 
 # =================================================================
@@ -447,8 +461,10 @@ class Handler(BaseHTTPRequestHandler):
             status = {
                 "builtin_count": len(PLATFORMS),
                 "blackbird": find_blackbird() is not None,
+                "spiderfoot": find_spiderfoot() is not None,
                 "maigret": find_tool("maigret"),
                 "sherlock": find_tool("sherlock"),
+                "holehe": find_tool("holehe"),
             }
             self._json(status)
 
@@ -505,9 +521,11 @@ def main():
     print(f"  ================")
     print(f"  Open in browser: http://localhost:{PORT}")
     print(f"  Built-in platforms: {len(PLATFORMS)}")
-    print(f"  Blackbird: {'FOUND' if find_blackbird() else 'not found'}")
-    print(f"  Maigret:   {'FOUND' if find_tool('maigret') else 'not found'}")
-    print(f"  Sherlock:  {'FOUND' if find_tool('sherlock') else 'not found'}")
+    print(f"  Blackbird:   {'FOUND' if find_blackbird() else 'not found'}")
+    print(f"  SpiderFoot:  {'FOUND' if find_spiderfoot() else 'not found'}")
+    print(f"  Maigret:     {'FOUND' if find_tool('maigret') else 'not found'}")
+    print(f"  Sherlock:    {'FOUND' if find_tool('sherlock') else 'not found'}")
+    print(f"  Holehe:      {'FOUND' if find_tool('holehe') else 'not found'}")
     print(f"  Press Ctrl+C to stop.\n")
 
     server = HTTPServer(("0.0.0.0", PORT), Handler)
