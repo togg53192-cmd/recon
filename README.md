@@ -18,7 +18,7 @@ Web UI (recommended)
 ```bash
 powershellrecon-web
 ```
-Opens a browser at http://localhost:8420. Keep the terminal window open while using it.
+Opens a browser at http://localhost:8420. Keep the terminal window open while using it. Search Can take around 5 min or more
 
 # Command Line
 
