@@ -420,25 +420,25 @@ def run_blackbird(username, search_type="username", callback=None):
 # ── SpiderFoot ───────────────────────────────────────────────────
 
 def find_spiderfoot():
-    """Find sf.py — SpiderFoot's main entry point."""
+    """Find sf.py — SpiderFoot's main entry point.
+    Must return the FULL PATH because SpiderFoot must be run from its own dir."""
     found = _find_script("spiderfoot", ["sf.py"],
                          extra_dirs=[
                              os.environ.get("SPIDERFOOT_PATH",""),
                              "spiderfoot-4.0",
                          ])
     if found: return found
-    # Check if spiderfoot is a pip-installed CLI
     if find_tool("spiderfoot"): return "spiderfoot"
     if find_tool("sf"): return "sf"
     return None
 
 def run_spiderfoot(username, search_type="username", callback=None):
-    """Run SpiderFoot CLI scan and parse JSON results.
+    """Run SpiderFoot in CLI scan mode.
 
-    SpiderFoot CLI:
-        python3 sf.py -s "username" -o json -u passive
-    For emails:
-        python3 sf.py -s "user@example.com" -o json -u passive
+    SpiderFoot MUST be run from its own directory (it loads modules relatively).
+    For usernames: python3 sf.py -s "username" -m sfp_accounts -o tab -H -n
+    For emails:    python3 sf.py -s "user@example.com" -m sfp_accounts,sfp_hunter,sfp_haveibeenpwned -o tab -H -n
+    Tab output format: Source<TAB>Type<TAB>SourceData<TAB>Data
     """
     sf = find_spiderfoot()
     if not sf: return [], False
@@ -448,85 +448,128 @@ def run_spiderfoot(username, search_type="username", callback=None):
     results = []
 
     try:
+        # Determine command and working directory
         if sf in ("spiderfoot", "sf"):
             cmd = [sf]
+            cwd = None
         else:
-            cmd = [sys.executable, sf]
+            sf_path = Path(sf).resolve()
+            sf_dir = str(sf_path.parent)
+            cmd = [sys.executable, str(sf_path)]
+            cwd = sf_dir  # CRITICAL: SpiderFoot must run from its own directory
 
-        # Quote the target for SpiderFoot (it auto-detects usernames)
+        # SpiderFoot auto-quotes usernames without dots
         target = username
-        cmd.extend(["-s", target, "-o", "json", "-u", "passive", "-q"])
 
-        if callback: callback("tool_start", 0, 0, "SpiderFoot (passive scan, up to 5 min)")
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300,
-                              cwd=str(Path(sf).parent) if sf not in ("spiderfoot","sf") else None)
+        # Select modules based on input type
+        if search_type == "email":
+            modules = "sfp_accounts,sfp_hunter,sfp_haveibeenpwned,sfp_emailformat,sfp_gravatar"
+        else:
+            modules = "sfp_accounts"
+
+        # Build command: -s TARGET -m MODULES -o tab -H (no headers) -n (strip newlines)
+        cmd.extend(["-s", target, "-m", modules, "-o", "tab", "-H", "-n"])
+
+        if callback: callback("tool_start", 0, 0,
+            f"SpiderFoot (modules: {modules}, this may take 1-5 min)")
+
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=600, cwd=cwd)
+
         output = proc.stdout or ""
+        stderr = proc.stderr or ""
 
-        # SpiderFoot JSON output is an array of event objects:
-        # [{"type": "SOCIAL_MEDIA", "data": "...", "module": "sfp_accounts", "source": "..."}, ...]
-        # Also can be tab-delimited: Source\tType\tSourceData\tData
-        try:
-            events = json.loads(output)
-            if isinstance(events, list):
-                for ev in events:
-                    if not isinstance(ev, dict): continue
-                    etype = ev.get("type","")
-                    data = ev.get("data","")
-                    module = ev.get("module","")
-                    source_data = ev.get("source","")
+        # Log any errors for debugging
+        if proc.returncode != 0 and callback:
+            # SpiderFoot prints info to stderr, only report real errors
+            err_lines = [l for l in stderr.splitlines()
+                         if "ERROR" in l.upper() or "CRITICAL" in l.upper()]
+            if err_lines:
+                callback("tool_error", 0, 0,
+                         f"SpiderFoot stderr: {err_lines[0][:150]}")
 
-                    # Social media / account / username events
-                    if any(t in etype.upper() for t in [
-                        "SOCIAL_MEDIA", "ACCOUNT", "USERNAME",
-                        "AFFILIATE_", "EMAILADDR", "HUMAN_NAME",
-                        "PHONE_NUMBER", "GEOINFO", "WEBSERVER_BANNER",
-                        "LINKED_URL", "DOMAIN_NAME"
-                    ]):
-                        # Extract URL if present
-                        url_match = re.search(r'https?://\S+', data)
-                        url = url_match.group(0) if url_match else data
+        # Parse tab-delimited output
+        # Format: Module\tEventType\tSourceData\tData
+        for line in output.splitlines():
+            line = line.strip()
+            if not line: continue
 
-                        # Determine platform name from module or data
-                        platform = module.replace("sfp_","").replace("_"," ").title()
-                        if not platform or platform == "Accounts":
-                            # Try to extract from URL
-                            try:
-                                from urllib.parse import urlparse
-                                platform = urlparse(url).netloc.replace("www.","").split(".")[0].title()
-                            except:
-                                platform = etype
+            parts = line.split("\t")
+            if len(parts) < 4: continue
 
-                        results.append(Result(
-                            platform=f"SF:{platform}",
-                            profile_url=url if url.startswith("http") else "",
-                            category=etype.replace("_"," ").title(),
-                            exists=True, confidence=78, source="spiderfoot",
-                            info={"event_type": etype, "module": module, "raw": data[:200]}
-                        ))
-        except json.JSONDecodeError:
-            # Fall back to tab-delimited parsing
-            for line in output.splitlines():
-                parts = line.split("\t")
-                if len(parts) >= 4:
-                    src, etype, src_data, data = parts[0], parts[1], parts[2], parts[3]
-                    if any(t in etype.upper() for t in ["SOCIAL","ACCOUNT","USERNAME","EMAIL"]):
-                        url_match = re.search(r'https?://\S+', data)
-                        results.append(Result(
-                            platform=f"SF:{src.replace('sfp_','').title()}",
-                            profile_url=url_match.group(0) if url_match else data,
-                            category=etype.replace("_"," ").title(),
-                            exists=True, confidence=78, source="spiderfoot",
-                            info={"event_type": etype, "raw": data[:200]}
-                        ))
+            module_name = parts[0].strip()
+            event_type = parts[1].strip()
+            source_data = parts[2].strip()
+            data = parts[3].strip()
+
+            # Only keep interesting event types
+            interesting = [
+                "SOCIAL_MEDIA", "ACCOUNT_EXTERNAL_OWNED",
+                "USERNAME", "EMAILADDR", "HUMAN_NAME",
+                "LINKED_URL_EXTERNAL", "AFFILIATE_INTERNET_NAME",
+                "PHONE_NUMBER", "GEOINFO", "PROVIDER_HOSTING",
+            ]
+            if not any(t in event_type.upper() for t in interesting):
+                continue
+
+            # Extract URL from data if present
+            url_match = re.search(r'https?://\S+', data)
+            url = url_match.group(0) if url_match else ""
+
+            # Clean up platform name
+            platform = module_name.replace("sfp_","").replace("_"," ").title()
+            # If data contains "Platform - URL" format (common for sfp_accounts)
+            dash_match = re.match(r'^(.+?)\s*-\s*(https?://\S+)', data)
+            if dash_match:
+                platform = dash_match.group(1).strip()
+                url = dash_match.group(2).strip()
+
+            if not url and not data:
+                continue
+
+            results.append(Result(
+                platform=f"SF:{platform}" if not dash_match else platform,
+                profile_url=url or data,
+                category=event_type.replace("_"," ").title(),
+                exists=True, confidence=78, source="spiderfoot",
+                info={"event_type": event_type, "module": module_name,
+                      "raw_data": data[:200]}
+            ))
+
+        # If tab parsing found nothing, try JSON output as fallback
+        if not results and output.strip().startswith("["):
+            try:
+                events = json.loads(output)
+                if isinstance(events, list):
+                    for ev in events:
+                        if not isinstance(ev, dict): continue
+                        etype = ev.get("type","")
+                        data = ev.get("data","")
+                        if any(t in etype.upper() for t in
+                               ["SOCIAL","ACCOUNT","USERNAME","EMAIL"]):
+                            url_match = re.search(r'https?://\S+', data)
+                            results.append(Result(
+                                platform=f"SF:{ev.get('module','').replace('sfp_','').title()}",
+                                profile_url=url_match.group(0) if url_match else data,
+                                category=etype.replace("_"," ").title(),
+                                exists=True, confidence=78, source="spiderfoot",
+                                info={"event_type": etype, "raw": data[:200]}
+                            ))
+            except: pass
 
         if callback: callback("tool_done", len(results), 0, "SpiderFoot")
         return results, True
 
     except subprocess.TimeoutExpired:
-        if callback: callback("tool_done", 0, 0, "SpiderFoot (timed out after 5 min - no results)")
+        if callback: callback("tool_done", 0, 0, "SpiderFoot (timeout 600s - scan too slow)")
+        return [], True
+    except FileNotFoundError:
+        if callback: callback("tool_error", 0, 0,
+            "SpiderFoot: sf.py found but failed to execute. Ensure dependencies are installed: "
+            "cd spiderfoot && pip install -r requirements.txt")
         return [], True
     except Exception as e:
-        if callback: callback("tool_error", 0, 0, f"SpiderFoot: {e}")
+        if callback: callback("tool_error", 0, 0, f"SpiderFoot error: {e}")
         return [], True
 
 
@@ -938,8 +981,9 @@ async def full_scan(username, skip_wmn=False, skip_external=False, callback=None
         if callback and bb_results:
             for r in bb_results: callback("ext_found", 0, 0, r)
 
-        # SpiderFoot (auto-detects target type)
-        sf_results, sf_found = run_spiderfoot(username, callback=callback)
+        # SpiderFoot (auto-detects target type, must run from its own dir)
+        sf_search = "email" if input_type == "email" else "username"
+        sf_results, sf_found = run_spiderfoot(username, search_type=sf_search, callback=callback)
         if sf_found: sources.append("SpiderFoot")
         all_results.extend(sf_results)
         if callback and sf_results:
