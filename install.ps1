@@ -3,8 +3,8 @@
 
 $ErrorActionPreference = "Stop"
 
-$REPO_URL  = "https://github.com/YOURNAME/recon"          # <-- change this
-$RAW_URL   = "https://raw.githubusercontent.com/YOURNAME/recon/main"  # <-- change this
+$REPO_URL  = "https://github.com/togg53192-cmd/recon"
+$RAW_URL   = "https://raw.githubusercontent.com/togg53192-cmd/recon/main"
 $INSTALL_DIR = "$env:USERPROFILE\recon"
 $FILES = @("recon.py", "recon_engine.py", "server.py", "README.md")
 
